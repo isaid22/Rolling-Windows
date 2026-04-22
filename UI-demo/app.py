@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from statistics import NormalDist
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.colors import qualitative
 import streamlit as st
 
 st.set_page_config(
@@ -211,12 +213,22 @@ def build_rolling_figure(
     rolling_df: pd.DataFrame,
     series_label: str,
     band_mode: str,
+    window_days: int,
+    confidence_pct: float,
+    bollinger_k: float,
 ) -> go.Figure:
     fig = go.Figure()
 
     if band_mode == "stddev":
         spread = rolling_df["moving_variance"].pow(0.5)
         band_label = "Std Dev Band"
+    elif band_mode == "bollinger":
+        spread = bollinger_k * rolling_df["moving_variance"].pow(0.5)
+        band_label = f"Bollinger Band (k={bollinger_k:.2f})"
+    elif band_mode == "confidence_interval":
+        z_score = NormalDist().inv_cdf(0.5 + (confidence_pct / 100.0) / 2.0)
+        spread = z_score * rolling_df["moving_variance"].pow(0.5) / (window_days**0.5)
+        band_label = f"{confidence_pct:.1f}% CI Band"
     else:
         spread = rolling_df["moving_variance"]
         band_label = "Variance Band"
@@ -302,8 +314,209 @@ def build_variance_figure(rolling_df: pd.DataFrame, series_label: str) -> go.Fig
     return fig
 
 
+def apply_row_filters(
+    df: pd.DataFrame,
+    selected_filter_cols: list[str],
+    selected_filter_values: dict[str, list[str]],
+) -> pd.DataFrame:
+    filtered = df.copy()
+    for col in selected_filter_cols:
+        values = selected_filter_values.get(col, [])
+        if values:
+            filtered = filtered[filtered[col].astype(str).isin(values)]
+    return filtered
+
+
+def build_combined_rolling_figure(
+    rolling_by_series: dict[str, pd.DataFrame],
+    band_mode: str,
+    show_bands: bool,
+    window_days: int,
+    confidence_pct: float,
+    bollinger_k: float,
+) -> go.Figure:
+    fig = go.Figure()
+    palette = qualitative.Safe + qualitative.Set2 + qualitative.Plotly
+
+    for idx, (series_name, rolling_df) in enumerate(rolling_by_series.items()):
+        color = palette[idx % len(palette)]
+        fig.add_trace(
+            go.Scatter(
+                x=rolling_df["date"],
+                y=rolling_df["moving_average"],
+                mode="lines",
+                name=f"{series_name} Moving Average",
+                line={"color": color, "width": 2.2},
+                customdata=rolling_df[["moving_variance"]].values,
+                hovertemplate=(
+                    "Series=" + series_name + "<br>"
+                    "Date=%{x|%Y-%m-%d}<br>"
+                    "Moving Average=%{y:.2f}<br>"
+                    "Moving Variance=%{customdata[0]:.2f}<extra></extra>"
+                ),
+            )
+        )
+
+        if show_bands:
+            if band_mode == "stddev":
+                spread = rolling_df["moving_variance"].pow(0.5)
+            elif band_mode == "bollinger":
+                spread = bollinger_k * rolling_df["moving_variance"].pow(0.5)
+            elif band_mode == "confidence_interval":
+                z_score = NormalDist().inv_cdf(0.5 + (confidence_pct / 100.0) / 2.0)
+                spread = z_score * rolling_df["moving_variance"].pow(0.5) / (window_days**0.5)
+            else:
+                spread = rolling_df["moving_variance"]
+
+            lower = (rolling_df["moving_average"] - spread).clip(lower=0)
+            upper = rolling_df["moving_average"] + spread
+
+            fig.add_trace(
+                go.Scatter(
+                    x=rolling_df["date"],
+                    y=upper,
+                    mode="lines",
+                    line={"color": color, "width": 0},
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=rolling_df["date"],
+                    y=lower,
+                    mode="lines",
+                    fill="tonexty",
+                    fillcolor="rgba(12, 94, 168, 0.14)",
+                    line={"color": color, "width": 0},
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+    fig.update_layout(
+        height=460,
+        margin={"l": 10, "r": 10, "t": 110, "b": 10},
+        template="plotly_white",
+        title={
+            "text": "Rolling Window Trend (Combined Series)",
+            "x": 0,
+            "xanchor": "left",
+            "y": 0.98,
+            "yanchor": "top",
+            "pad": {"b": 20},
+        },
+        xaxis_title="Date",
+        yaxis_title="Value",
+        legend={"orientation": "h", "yanchor": "top", "y": 1.0, "x": 0},
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(15, 23, 42, 0.08)")
+    return fig
+
+
+def resolve_confidence_pct(slider_value: float, text_value: str) -> float:
+    text = text_value.strip()
+    if not text:
+        return slider_value
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise ValueError("Confidence interval text input must be a number (e.g., 95).") from exc
+    if not (50.0 <= value < 100.0):
+        raise ValueError("Confidence interval must be between 50 and 100 (exclusive).")
+    return value
+
+
+def resolve_bollinger_k(slider_value: float, text_value: str) -> float:
+    text = text_value.strip()
+    if not text:
+        return slider_value
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise ValueError("Bollinger k text input must be a number (e.g., 2.0).") from exc
+    if not (0.1 <= value <= 5.0):
+        raise ValueError("Bollinger k must be between 0.1 and 5.0.")
+    return value
+
+
+def sync_confidence_from_slider() -> None:
+    st.session_state["confidence_pct_text"] = f"{st.session_state['confidence_pct_slider']:.1f}"
+
+
+def sync_confidence_from_text() -> None:
+    text = st.session_state.get("confidence_pct_text", "").strip()
+    if not text:
+        return
+    try:
+        value = float(text)
+    except ValueError:
+        return
+    if 50.0 <= value < 100.0:
+        st.session_state["confidence_pct_slider"] = value
+
+
+def sync_bollinger_from_slider() -> None:
+    st.session_state["bollinger_k_text"] = f"{st.session_state['bollinger_k_slider']:.2f}"
+
+
+def sync_bollinger_from_text() -> None:
+    text = st.session_state.get("bollinger_k_text", "").strip()
+    if not text:
+        return
+    try:
+        value = float(text)
+    except ValueError:
+        return
+    if 0.1 <= value <= 5.0:
+        st.session_state["bollinger_k_slider"] = value
+
+
+def sync_window_from_slider() -> None:
+    st.session_state["window_days_text"] = str(st.session_state["window_days_slider"])
+
+
+def sync_window_from_text() -> None:
+    text = st.session_state.get("window_days_text", "").strip()
+    if not text:
+        return
+    try:
+        value = int(text)
+    except ValueError:
+        return
+    if 2 <= value <= 60:
+        st.session_state["window_days_slider"] = value
+
+
+def resolve_window_days(slider_value: int, text_value: str) -> int:
+    text = text_value.strip()
+    if not text:
+        return slider_value
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise ValueError("Rolling window text input must be an integer (e.g., 7, 14, 21).") from exc
+    if not (2 <= value <= 60):
+        raise ValueError("Rolling window length must be between 2 and 60 days.")
+    return value
+
+
 def main() -> None:
     inject_style()
+
+    if "confidence_pct_slider" not in st.session_state:
+        st.session_state["confidence_pct_slider"] = 95.0
+    if "confidence_pct_text" not in st.session_state:
+        st.session_state["confidence_pct_text"] = ""
+    if "window_days_slider" not in st.session_state:
+        st.session_state["window_days_slider"] = 7
+    if "window_days_text" not in st.session_state:
+        st.session_state["window_days_text"] = ""
+    if "bollinger_k_slider" not in st.session_state:
+        st.session_state["bollinger_k_slider"] = 2.0
+    if "bollinger_k_text" not in st.session_state:
+        st.session_state["bollinger_k_text"] = ""
 
     st.markdown('<div class="app-title">ATM Rolling Window Analytics</div>', unsafe_allow_html=True)
     st.markdown(
@@ -326,12 +539,60 @@ def main() -> None:
 
         uploaded = st.file_uploader("Or upload CSV", type=["csv"])
 
-        window_days = st.slider("Rolling window length (days)", min_value=2, max_value=60, value=7)
+        window_days_slider = st.slider(
+            "Rolling window length (days)",
+            min_value=2,
+            max_value=60,
+            key="window_days_slider",
+            on_change=sync_window_from_slider,
+        )
+        window_days_text = st.text_input(
+            "Or enter rolling window length",
+            key="window_days_text",
+            on_change=sync_window_from_text,
+            help="Optional manual override between 2 and 60 days.",
+        )
         band_mode = st.radio(
             "Band type",
-            options=["stddev", "variance"],
+            options=["stddev", "variance", "confidence_interval", "bollinger"],
             index=0,
             horizontal=True,
+            format_func=lambda x: {
+                "stddev": "Std Dev",
+                "variance": "Variance",
+                "confidence_interval": "Confidence Interval",
+                "bollinger": "Bollinger",
+            }[x],
+        )
+        confidence_pct_slider = st.slider(
+            "Confidence interval (%)",
+            min_value=50.0,
+            max_value=99.9,
+            step=0.1,
+            key="confidence_pct_slider",
+            on_change=sync_confidence_from_slider,
+            help="Used when band type is confidence_interval.",
+        )
+        confidence_pct_text = st.text_input(
+            "Or enter confidence interval (%)",
+            key="confidence_pct_text",
+            on_change=sync_confidence_from_text,
+            help="Optional manual override (e.g., 90, 95, 99).",
+        )
+        bollinger_k_slider = st.slider(
+            "Bollinger k",
+            min_value=0.1,
+            max_value=5.0,
+            step=0.1,
+            key="bollinger_k_slider",
+            on_change=sync_bollinger_from_slider,
+            help="Used when band type is bollinger. Common default is 2.0.",
+        )
+        bollinger_k_text = st.text_input(
+            "Or enter Bollinger k",
+            key="bollinger_k_text",
+            on_change=sync_bollinger_from_text,
+            help="Optional manual override (e.g., 1.5, 2.0, 2.5).",
         )
         show_variance_panel = st.checkbox("Show explicit variance panel", value=True)
 
@@ -347,6 +608,14 @@ def main() -> None:
 
     st.markdown(f'<div class="info-card">{source_label}</div>', unsafe_allow_html=True)
 
+    try:
+        window_days = resolve_window_days(window_days_slider, window_days_text)
+        confidence_pct = resolve_confidence_pct(confidence_pct_slider, confidence_pct_text)
+        bollinger_k = resolve_bollinger_k(bollinger_k_slider, bollinger_k_text)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+
     col_a, col_b, col_c = st.columns(3)
     col_a.metric("Rows", f"{len(raw_df):,}")
     col_b.metric("Columns", f"{len(raw_df.columns):,}")
@@ -354,6 +623,30 @@ def main() -> None:
 
     with st.expander("Preview selected CSV", expanded=True):
         st.dataframe(raw_df.head(200), use_container_width=True)
+
+    with st.sidebar:
+        st.subheader("Data Filters")
+        filterable_cols = list(raw_df.columns)
+        selected_filter_cols = st.multiselect(
+            "Columns to filter",
+            options=filterable_cols,
+            default=[],
+            help="Choose one or more columns to filter the dataset before time-series prep.",
+        )
+        selected_filter_values: dict[str, list[str]] = {}
+        for col in selected_filter_cols:
+            distinct_values = sorted(raw_df[col].dropna().astype(str).unique().tolist())
+            selected_filter_values[col] = st.multiselect(
+                f"Values for {col}",
+                options=distinct_values,
+                default=distinct_values,
+            )
+
+    filtered_df = apply_row_filters(raw_df, selected_filter_cols, selected_filter_values)
+    st.caption(f"Rows after filters: {len(filtered_df):,} / {len(raw_df):,}")
+    if filtered_df.empty:
+        st.warning("No rows left after applying filters. Adjust filter selections.")
+        return
 
     with st.sidebar:
         st.subheader("Column Mapping")
@@ -373,12 +666,12 @@ def main() -> None:
             help="Auto-detect infers layout from columns. Use Wide or Long to override.",
         )
 
-        detected_layout = infer_layout(raw_df, date_col)
+        detected_layout = infer_layout(filtered_df, date_col)
         effective_layout = detected_layout if data_shape == "Auto-detect" else data_shape
         if data_shape == "Auto-detect":
             st.caption(f"Detected layout: {detected_layout}")
 
-        long_denom_default, long_value_default = choose_long_defaults(raw_df, date_col)
+        long_denom_default, long_value_default = choose_long_defaults(filtered_df, date_col)
         long_denom_col = long_denom_default
         long_value_col = long_value_default
         if effective_layout == "Long":
@@ -397,7 +690,7 @@ def main() -> None:
                     "Long format needs three different columns: date, series label, and value."
                 )
 
-        candidate_numeric = infer_numeric_columns(raw_df, excluded={date_col})
+        candidate_numeric = infer_numeric_columns(filtered_df, excluded={date_col})
         denom_defaults = [
             c for c in candidate_numeric if c.endswith("_dollar_bills_withdrawn")
         ]
@@ -422,7 +715,7 @@ def main() -> None:
 
     try:
         daily_df, available_series = prepare_daily_wide(
-            raw_df,
+            filtered_df,
             date_col=date_col,
             data_shape=effective_layout,
             selected_series_cols=selected_series_cols,
@@ -444,12 +737,26 @@ def main() -> None:
             options=available_series,
             default=available_series,
         )
+        plot_mode = "Separate"
+        show_bands_combined = True
+        if len(selected_series) > 1:
+            plot_mode = st.radio(
+                "Plot mode",
+                options=["Combined", "Separate"],
+                index=0,
+                horizontal=True,
+                help="Combined overlays selected series on one chart with different colors.",
+            )
+            show_bands_combined = st.checkbox(
+                "Show bands on combined plot",
+                value=True,
+            )
 
     if not selected_series:
         st.warning("Select at least one series to draw charts.")
         return
 
-    st.subheader("Rolling Statistics Charts")
+    rolling_by_series: dict[str, pd.DataFrame] = {}
     for series_name in selected_series:
         rolling_df = compute_rolling(daily_df, series_name, window_days)
         if rolling_df.empty:
@@ -457,9 +764,36 @@ def main() -> None:
                 f"Not enough observations for '{series_name}' with a {window_days}-day window."
             )
             continue
+        rolling_by_series[series_name] = rolling_df
 
-        fig = build_rolling_figure(rolling_df, series_name, band_mode)
-        st.plotly_chart(fig, use_container_width=True)
+    if not rolling_by_series:
+        st.warning("No rolling series available after filtering and window settings.")
+        return
+
+    st.subheader("Rolling Statistics Charts")
+
+    if plot_mode == "Combined" and len(rolling_by_series) > 1:
+        combined_fig = build_combined_rolling_figure(
+            rolling_by_series,
+            band_mode,
+            show_bands_combined,
+            window_days,
+            confidence_pct,
+            bollinger_k,
+        )
+        st.plotly_chart(combined_fig, use_container_width=True)
+
+    for series_name, rolling_df in rolling_by_series.items():
+        if plot_mode == "Separate" or len(rolling_by_series) == 1:
+            fig = build_rolling_figure(
+                rolling_df,
+                series_name,
+                band_mode,
+                window_days,
+                confidence_pct,
+                bollinger_k,
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
         metric_col_1.metric("Latest Variance", f"{rolling_df['moving_variance'].iloc[-1]:,.2f}")
