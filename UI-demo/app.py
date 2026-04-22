@@ -276,12 +276,12 @@ def build_rolling_figure(
 
     fig.update_layout(
         height=420,
-        margin={"l": 10, "r": 10, "t": 50, "b": 10},
+        margin={"l": 10, "r": 10, "t": 50, "b": 80},
         template="plotly_white",
         title=f"{series_label} Rolling Window Trend",
         xaxis_title="Date",
         yaxis_title="Bills Withdrawn",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0},
+        legend={"orientation": "h", "yanchor": "top", "y": -0.2, "x": 0},
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(gridcolor="rgba(15, 23, 42, 0.08)")
@@ -414,7 +414,7 @@ def build_combined_rolling_figure(
 
     fig.update_layout(
         height=460,
-        margin={"l": 10, "r": 10, "t": 110, "b": 10},
+        margin={"l": 10, "r": 10, "t": 110, "b": 90},
         template="plotly_white",
         title={
             "text": "Rolling Window Trend (Combined Series)",
@@ -426,7 +426,7 @@ def build_combined_rolling_figure(
         },
         xaxis_title="Date",
         yaxis_title="Value",
-        legend={"orientation": "h", "yanchor": "top", "y": 1.0, "x": 0},
+        legend={"orientation": "h", "yanchor": "top", "y": -0.2, "x": 0},
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(gridcolor="rgba(15, 23, 42, 0.08)")
