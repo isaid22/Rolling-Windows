@@ -317,14 +317,32 @@ def build_variance_figure(rolling_df: pd.DataFrame, series_label: str) -> go.Fig
 def apply_row_filters(
     df: pd.DataFrame,
     selected_filter_cols: list[str],
-    selected_filter_values: dict[str, list[str]],
+    selected_filter_values: dict[str, list[object]],
 ) -> pd.DataFrame:
     filtered = df.copy()
     for col in selected_filter_cols:
         values = selected_filter_values.get(col, [])
         if values:
-            filtered = filtered[filtered[col].astype(str).isin(values)]
+            filtered = filtered[filtered[col].isin(values)]
     return filtered
+
+
+def get_filter_options(df: pd.DataFrame, col: str) -> list[object]:
+    series = df[col].dropna()
+    if series.empty:
+        return []
+
+    try:
+        numeric = pd.to_numeric(series, errors="raise")
+        return sorted(numeric.unique().tolist())
+    except Exception:
+        pass
+
+    try:
+        return sorted(series.unique().tolist())
+    except TypeError:
+        # Fallback for mixed non-comparable types.
+        return sorted(series.unique().tolist(), key=lambda x: str(x))
 
 
 def build_combined_rolling_figure(
@@ -633,9 +651,9 @@ def main() -> None:
             default=[],
             help="Choose one or more columns to filter the dataset before time-series prep.",
         )
-        selected_filter_values: dict[str, list[str]] = {}
+        selected_filter_values: dict[str, list[object]] = {}
         for col in selected_filter_cols:
-            distinct_values = sorted(raw_df[col].dropna().astype(str).unique().tolist())
+            distinct_values = get_filter_options(raw_df, col)
             selected_filter_values[col] = st.multiselect(
                 f"Values for {col}",
                 options=distinct_values,
