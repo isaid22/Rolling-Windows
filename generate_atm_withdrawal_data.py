@@ -22,6 +22,8 @@ from pathlib import Path
 class ATMProfile:
     atm_id: str
     area: str
+    latitude: float
+    longitude: float
     base_traffic: float
     tourist_weight: float
     office_weight: float
@@ -30,26 +32,26 @@ class ATMProfile:
 
 
 ATM_PROFILES = [
-    ATMProfile("LM-ATM-001", "Battery Park", 1.05, 1.20, 0.70, 0.65, 1.20),
-    ATMProfile("LM-ATM-002", "Wall Street", 1.25, 0.55, 1.40, 0.45, 1.05),
-    ATMProfile("LM-ATM-003", "Broad Street", 1.18, 0.60, 1.35, 0.42, 1.05),
-    ATMProfile("LM-ATM-004", "Fulton Center", 1.35, 1.00, 1.20, 0.60, 1.15),
-    ATMProfile("LM-ATM-005", "South Street Seaport", 1.22, 1.35, 0.70, 0.55, 1.25),
-    ATMProfile("LM-ATM-006", "Tribeca", 0.98, 0.75, 0.90, 1.00, 0.95),
-    ATMProfile("LM-ATM-007", "City Hall", 1.08, 0.85, 1.10, 0.70, 1.00),
-    ATMProfile("LM-ATM-008", "Chinatown", 1.12, 1.05, 0.85, 0.90, 1.00),
-    ATMProfile("LM-ATM-009", "Little Italy", 1.04, 1.25, 0.70, 0.75, 1.10),
-    ATMProfile("LM-ATM-010", "SoHo Broadway", 1.30, 1.50, 0.85, 0.65, 1.20),
-    ATMProfile("LM-ATM-011", "NoLiTa", 0.96, 1.20, 0.65, 0.80, 1.10),
-    ATMProfile("LM-ATM-012", "Canal Street", 1.20, 1.15, 0.95, 0.75, 1.15),
-    ATMProfile("LM-ATM-013", "World Trade Center", 1.38, 0.95, 1.45, 0.48, 1.10),
-    ATMProfile("LM-ATM-014", "Brookfield Place", 1.28, 0.90, 1.35, 0.52, 1.10),
-    ATMProfile("LM-ATM-015", "Bowling Green", 1.10, 0.95, 1.10, 0.60, 1.00),
-    ATMProfile("LM-ATM-016", "Staten Ferry Terminal", 1.18, 1.30, 0.70, 0.58, 1.30),
-    ATMProfile("LM-ATM-017", "Essex Market", 1.02, 1.00, 0.75, 0.95, 1.00),
-    ATMProfile("LM-ATM-018", "Houston Street", 1.06, 1.18, 0.82, 0.82, 1.10),
-    ATMProfile("LM-ATM-019", "Delancey Street", 1.00, 1.08, 0.78, 0.92, 1.05),
-    ATMProfile("LM-ATM-020", "Pier 17", 1.15, 1.45, 0.62, 0.60, 1.25),
+    ATMProfile("LM-ATM-001", "Battery Park",          40.7033, -74.0170, 1.05, 1.20, 0.70, 0.65, 1.20),
+    ATMProfile("LM-ATM-002", "Wall Street",            40.7074, -74.0113, 1.25, 0.55, 1.40, 0.45, 1.05),
+    ATMProfile("LM-ATM-003", "Broad Street",           40.7069, -74.0113, 1.18, 0.60, 1.35, 0.42, 1.05),
+    ATMProfile("LM-ATM-004", "Fulton Center",          40.7103, -74.0076, 1.35, 1.00, 1.20, 0.60, 1.15),
+    ATMProfile("LM-ATM-005", "South Street Seaport",   40.7069, -74.0030, 1.22, 1.35, 0.70, 0.55, 1.25),
+    ATMProfile("LM-ATM-006", "Tribeca",                40.7163, -74.0086, 0.98, 0.75, 0.90, 1.00, 0.95),
+    ATMProfile("LM-ATM-007", "City Hall",              40.7128, -74.0059, 1.08, 0.85, 1.10, 0.70, 1.00),
+    ATMProfile("LM-ATM-008", "Chinatown",              40.7158, -73.9973, 1.12, 1.05, 0.85, 0.90, 1.00),
+    ATMProfile("LM-ATM-009", "Little Italy",           40.7191, -73.9973, 1.04, 1.25, 0.70, 0.75, 1.10),
+    ATMProfile("LM-ATM-010", "SoHo Broadway",          40.7233, -74.0020, 1.30, 1.50, 0.85, 0.65, 1.20),
+    ATMProfile("LM-ATM-011", "NoLiTa",                 40.7228, -73.9973, 0.96, 1.20, 0.65, 0.80, 1.10),
+    ATMProfile("LM-ATM-012", "Canal Street",           40.7190, -74.0020, 1.20, 1.15, 0.95, 0.75, 1.15),
+    ATMProfile("LM-ATM-013", "World Trade Center",     40.7116, -74.0130, 1.38, 0.95, 1.45, 0.48, 1.10),
+    ATMProfile("LM-ATM-014", "Brookfield Place",       40.7127, -74.0155, 1.28, 0.90, 1.35, 0.52, 1.10),
+    ATMProfile("LM-ATM-015", "Bowling Green",          40.7047, -74.0141, 1.10, 0.95, 1.10, 0.60, 1.00),
+    ATMProfile("LM-ATM-016", "Staten Ferry Terminal",  40.7013, -74.0132, 1.18, 1.30, 0.70, 0.58, 1.30),
+    ATMProfile("LM-ATM-017", "Essex Market",           40.7193, -73.9874, 1.02, 1.00, 0.75, 0.95, 1.00),
+    ATMProfile("LM-ATM-018", "Houston Street",         40.7282, -74.0050, 1.06, 1.18, 0.82, 0.82, 1.10),
+    ATMProfile("LM-ATM-019", "Delancey Street",        40.7188, -73.9885, 1.00, 1.08, 0.78, 0.92, 1.05),
+    ATMProfile("LM-ATM-020", "Pier 17",                40.7058, -74.0027, 1.15, 1.45, 0.62, 0.60, 1.25),
 ]
 
 
@@ -250,6 +252,8 @@ def generate_rows(start_date: dt.date, end_date: dt.date, seed: int = 20260419):
                 "date": day.isoformat(),
                 "atm_id": atm.atm_id,
                 "area": atm.area,
+                "latitude": atm.latitude,
+                "longitude": atm.longitude,
                 "weather": weather_condition,
                 "major_event": event_name,
                 "twenty_dollar_bills_withdrawn": twenty_count,
@@ -263,6 +267,8 @@ def write_csv(path: Path, rows: list[dict]):
         "date",
         "atm_id",
         "area",
+        "latitude",
+        "longitude",
         "weather",
         "major_event",
         "twenty_dollar_bills_withdrawn",

@@ -7,6 +7,7 @@ from pathlib import Path
 from statistics import NormalDist
 
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly.colors import qualitative
 import streamlit as st
@@ -16,6 +17,26 @@ st.set_page_config(
     page_icon="chart_with_upwards_trend",
     layout="wide",
 )
+
+# ---------------------------------------------------------------------------
+# Map constants
+# ---------------------------------------------------------------------------
+
+MAP_BILL_COLS = [
+    "twenty_dollar_bills_withdrawn",
+    "fifty_dollar_bills_withdrawn",
+    "hundred_dollar_bills_withdrawn",
+]
+MAP_BILL_LABELS = {
+    "twenty_dollar_bills_withdrawn": "$20 Bills",
+    "fifty_dollar_bills_withdrawn": "$50 Bills",
+    "hundred_dollar_bills_withdrawn": "$100 Bills",
+}
+MAP_DENOM_COLORS = {
+    "twenty_dollar_bills_withdrawn": "#3B82F6",
+    "fifty_dollar_bills_withdrawn": "#10B981",
+    "hundred_dollar_bills_withdrawn": "#F59E0B",
+}
 
 
 def inject_style() -> None:
@@ -53,6 +74,153 @@ def inject_style() -> None:
 
 def list_csv_files(search_root: Path) -> list[Path]:
     return sorted(search_root.glob("*.csv"))
+
+
+# ---------------------------------------------------------------------------
+# Map helpers
+# ---------------------------------------------------------------------------
+
+
+def _has_geo_columns(path: Path) -> bool:
+    with path.open("r", encoding="utf-8") as fh:
+        header = fh.readline()
+    return "latitude" in header and "longitude" in header
+
+
+def find_geo_csv_files(root: Path) -> list[Path]:
+    return [p for p in sorted(root.glob("atm_withdrawals_*.csv")) if _has_geo_columns(p)]
+
+
+@st.cache_data
+def load_geo_csv(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path, parse_dates=["date"])
+
+
+def build_atm_summary(df: pd.DataFrame, bill_cols: list[str]) -> pd.DataFrame:
+    agg_dict: dict[str, str] = {col: "sum" for col in bill_cols}
+    agg_dict.update({"latitude": "first", "longitude": "first", "area": "first"})
+    summary = df.groupby("atm_id", as_index=False).agg(agg_dict)
+    summary["total_withdrawals"] = summary[bill_cols].sum(axis=1)
+    return summary
+
+
+def build_map_figure(
+    summary: pd.DataFrame,
+    size_metric: str,
+    map_style: str,
+    max_bubble: int,
+) -> go.Figure:
+    # Normalize sizes linearly from min_px to max_bubble so differences are visible
+    # regardless of how tight the value range is.
+    vals = summary[size_metric].values.astype(float)
+    min_val, max_val = vals.min(), vals.max()
+    min_px = max(8, max_bubble * 0.2)
+    if max_val > min_val:
+        sizes = min_px + (vals - min_val) / (max_val - min_val) * (max_bubble - min_px)
+    else:
+        sizes = [max_bubble] * len(vals)
+
+    label_map = {
+        "total_withdrawals": "Total Withdrawals",
+        "twenty_dollar_bills_withdrawn": "$20 Bills",
+        "fifty_dollar_bills_withdrawn": "$50 Bills",
+        "hundred_dollar_bills_withdrawn": "$100 Bills",
+    }
+    metric_label = label_map.get(size_metric, size_metric)
+
+    # Build hover text manually
+    hover_lines = []
+    for _, row in summary.iterrows():
+        lines = [
+            f"<b>{row['atm_id']}</b>",
+            f"Area: {row['area']}",
+            f"Lat: {row['latitude']:.4f}  Lon: {row['longitude']:.4f}",
+            f"{metric_label}: {int(row[size_metric]):,}",
+        ]
+        for col in MAP_BILL_COLS:
+            if col in summary.columns and col != size_metric:
+                lines.append(f"{label_map.get(col, col)}: {int(row[col]):,}")
+        hover_lines.append("<br>".join(lines))
+
+    fig = go.Figure(
+        go.Scattermapbox(
+            lat=summary["latitude"],
+            lon=summary["longitude"],
+            mode="markers",
+            marker=go.scattermapbox.Marker(
+                size=list(sizes),
+                sizemode="diameter",
+                color=vals,
+                colorscale="Viridis",
+                showscale=True,
+                colorbar={"title": metric_label, "thickness": 14},
+                opacity=0.82,
+            ),
+            text=summary["atm_id"],
+            customdata=summary[["atm_id"]].values,
+            hovertemplate="%{hovertext}<extra></extra>",
+            hovertext=hover_lines,
+        )
+    )
+    fig.update_layout(
+        height=560,
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        mapbox={
+            "style": map_style,
+            "center": {"lat": 40.715, "lon": -74.006},
+            "zoom": 13,
+        },
+    )
+    return fig
+
+
+def build_map_timeseries_figure(daily: pd.DataFrame) -> go.Figure:
+    fig = px.line(
+        daily,
+        x="date",
+        y="total",
+        color="atm_id",
+        title="Daily Total Withdrawals — Selected ATMs",
+        labels={"total": "Bills Withdrawn", "date": "Date", "atm_id": "ATM"},
+        template="plotly_white",
+    )
+    fig.update_layout(
+        height=360,
+        margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        legend={"orientation": "h", "yanchor": "top", "y": -0.18, "x": 0},
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(15,23,42,0.08)")
+    return fig
+
+
+def build_map_denomination_figure(
+    daily: pd.DataFrame,
+    selected_bills: list[str],
+    selected_ids: list[str],
+) -> go.Figure:
+    melted = daily.melt(
+        id_vars=["date", "atm_id"],
+        value_vars=selected_bills,
+        var_name="denomination",
+        value_name="count",
+    )
+    fig = px.bar(
+        melted,
+        x="date",
+        y="count",
+        color="denomination",
+        facet_col="atm_id" if len(selected_ids) > 1 else None,
+        title="Denomination Breakdown — Selected ATMs",
+        labels={"count": "Bills Withdrawn", "date": "Date", "denomination": "Bill"},
+        template="plotly_white",
+        color_discrete_map=MAP_DENOM_COLORS,
+        barmode="stack",
+    )
+    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+    fig.update_layout(height=340, margin={"l": 10, "r": 10, "t": 45, "b": 10})
+    fig.update_xaxes(showgrid=False)
+    return fig
 
 
 def infer_date_column(columns: list[str]) -> str:
@@ -520,6 +688,139 @@ def resolve_window_days(slider_value: int, text_value: str) -> int:
     return value
 
 
+def render_map_tab(project_root: Path) -> None:
+    """Render the ATM Map tab content."""
+    geo_files = find_geo_csv_files(project_root)
+    if not geo_files:
+        st.error(
+            "No geo-enabled ATM CSVs found. "
+            "Re-run `generate_atm_withdrawal_data.py` to produce files with latitude/longitude."
+        )
+        return
+
+    with st.sidebar:
+        st.divider()
+        st.subheader("Map Controls")
+
+        csv_options = {p.name: p for p in geo_files}
+        map_selected_name = st.selectbox("Map dataset", list(csv_options), key="map_dataset")
+        map_df = load_geo_csv(csv_options[map_selected_name])
+
+        min_date = map_df["date"].min().date()
+        max_date = map_df["date"].max().date()
+        date_range = st.date_input(
+            "Date range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="map_date_range",
+        )
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_d, end_d = date_range
+            map_df = map_df[
+                (map_df["date"].dt.date >= start_d) & (map_df["date"].dt.date <= end_d)
+            ]
+
+        map_selected_bills = st.multiselect(
+            "Include denominations",
+            options=MAP_BILL_COLS,
+            default=MAP_BILL_COLS,
+            format_func=lambda x: MAP_BILL_LABELS[x],
+            key="map_bills",
+        )
+        if not map_selected_bills:
+            st.warning("Select at least one denomination.")
+            return
+
+        map_style = st.selectbox(
+            "Map style",
+            options=["carto-positron", "open-street-map", "carto-darkmatter"],
+            index=0,
+            key="map_style",
+        )
+        size_metric = st.selectbox(
+            "Bubble size & colour",
+            options=["total_withdrawals"] + map_selected_bills,
+            format_func=lambda x: (
+                "Total Withdrawals" if x == "total_withdrawals" else MAP_BILL_LABELS[x]
+            ),
+            key="map_size_metric",
+        )
+        max_bubble = st.slider("Max bubble size", min_value=15, max_value=70, value=38, key="map_bubble")
+
+    summary = build_atm_summary(map_df, map_selected_bills)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("ATMs on Map", len(summary))
+    c2.metric("Days in View", f"{map_df['date'].nunique():,}")
+    c3.metric("Total Withdrawals", f"{int(summary['total_withdrawals'].sum()):,}")
+    busiest = summary.loc[summary["total_withdrawals"].idxmax()]
+    c4.metric("Busiest ATM", f"{busiest['atm_id']} ({busiest['area']})")
+
+    map_fig = build_map_figure(summary, size_metric, map_style, max_bubble)
+    event = st.plotly_chart(
+        map_fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=["points"],
+        key="atm_map_chart",
+    )
+
+    selected_ids: list[str] = []
+    if event and hasattr(event, "selection") and event.selection.points:
+        for pt in event.selection.points:
+            cd = pt.get("customdata")
+            if cd:
+                selected_ids.append(cd[0])
+            else:
+                idx = pt.get("point_index")
+                if idx is not None and 0 <= idx < len(summary):
+                    selected_ids.append(summary.iloc[idx]["atm_id"])
+
+    st.divider()
+    if selected_ids:
+        st.subheader(f"Selected ATM{'s' if len(selected_ids) > 1 else ''}: {', '.join(selected_ids)}")
+        sel_summary = summary[summary["atm_id"].isin(selected_ids)].copy()
+        sel_data = map_df[map_df["atm_id"].isin(selected_ids)].copy()
+
+        display_cols = ["atm_id", "area", "latitude", "longitude", "total_withdrawals"] + map_selected_bills
+        st.dataframe(
+            sel_summary[display_cols].rename(
+                columns={**{"atm_id": "ATM ID", "total_withdrawals": "Total Withdrawals"}, **MAP_BILL_LABELS}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        daily = (
+            sel_data.groupby(["date", "atm_id"])[map_selected_bills]
+            .sum()
+            .reset_index()
+        )
+        daily["total"] = daily[map_selected_bills].sum(axis=1)
+
+        st.plotly_chart(build_map_timeseries_figure(daily), use_container_width=True)
+        if len(map_selected_bills) > 1:
+            st.plotly_chart(
+                build_map_denomination_figure(daily, map_selected_bills, selected_ids),
+                use_container_width=True,
+            )
+    else:
+        st.info("Click one or more ATM bubbles on the map to see detailed time-series charts below.")
+
+    with st.expander("All ATMs — aggregated summary", expanded=False):
+        disp = summary.sort_values("total_withdrawals", ascending=False).copy()
+        disp = disp.rename(
+            columns={
+                "atm_id": "ATM ID", "area": "Area",
+                "latitude": "Latitude", "longitude": "Longitude",
+                "total_withdrawals": "Total Withdrawals",
+                **MAP_BILL_LABELS,
+            }
+        )
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+
 def main() -> None:
     inject_style()
 
@@ -538,22 +839,25 @@ def main() -> None:
 
     st.markdown('<div class="app-title">ATM Rolling Window Analytics</div>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="app-subtitle">Load any CSV, choose your date and series columns, and visualize rolling window trends with variance controls.</p>',
+        '<p class="app-subtitle">Explore rolling window trends or switch to the Map tab to see ATM locations.</p>',
         unsafe_allow_html=True,
     )
 
     project_root = Path(__file__).resolve().parent.parent
     csv_files = list_csv_files(project_root)
 
-    with st.sidebar:
-        st.header("Controls")
-        selected_path: Path | None = None
-        if csv_files:
-            csv_options = {p.name: p for p in csv_files}
-            selected_name = st.selectbox("Choose input CSV", options=list(csv_options.keys()))
-            selected_path = csv_options[selected_name]
-        else:
-            st.warning("No CSV files found in the project root.")
+    tab_analytics, tab_map = st.tabs(["Rolling Analytics", "ATM Map"])
+
+    with tab_analytics:
+        with st.sidebar:
+            st.header("Controls")
+            selected_path: Path | None = None
+            if csv_files:
+                csv_options = {p.name: p for p in csv_files}
+                selected_name = st.selectbox("Choose input CSV", options=list(csv_options.keys()))
+                selected_path = csv_options[selected_name]
+            else:
+                st.warning("No CSV files found in the project root.")
 
         uploaded = st.file_uploader("Or upload CSV", type=["csv"])
 
@@ -614,228 +918,237 @@ def main() -> None:
         )
         show_variance_panel = st.checkbox("Show explicit variance panel", value=True)
 
-    if uploaded is not None:
-        source_label = f"Uploaded file: {uploaded.name}"
-        raw_df = pd.read_csv(uploaded)
-    elif selected_path is not None:
-        source_label = f"Selected file: {selected_path.name}"
-        raw_df = pd.read_csv(selected_path)
-    else:
-        st.info("Add or select a CSV to continue.")
-        return
+        if uploaded is not None:
+            source_label = f"Uploaded file: {uploaded.name}"
+            raw_df = pd.read_csv(uploaded)
+        elif selected_path is not None:
+            source_label = f"Selected file: {selected_path.name}"
+            raw_df = pd.read_csv(selected_path)
+        else:
+            st.info("Add or select a CSV to continue.")
+            raw_df = None
 
-    st.markdown(f'<div class="info-card">{source_label}</div>', unsafe_allow_html=True)
-
-    try:
-        window_days = resolve_window_days(window_days_slider, window_days_text)
-        confidence_pct = resolve_confidence_pct(confidence_pct_slider, confidence_pct_text)
-        bollinger_k = resolve_bollinger_k(bollinger_k_slider, bollinger_k_text)
-    except ValueError as exc:
-        st.error(str(exc))
-        return
-
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Rows", f"{len(raw_df):,}")
-    col_b.metric("Columns", f"{len(raw_df.columns):,}")
-    col_c.metric("Window Days", f"{window_days}")
-
-    with st.expander("Preview selected CSV", expanded=True):
-        st.dataframe(raw_df.head(200), use_container_width=True)
-
-    with st.sidebar:
-        st.subheader("Data Filters")
-        filterable_cols = list(raw_df.columns)
-        selected_filter_cols = st.multiselect(
-            "Columns to filter",
-            options=filterable_cols,
-            default=[],
-            help="Choose one or more columns to filter the dataset before time-series prep.",
-        )
-        selected_filter_values: dict[str, list[object]] = {}
-        for col in selected_filter_cols:
-            distinct_values = get_filter_options(raw_df, col)
-            selected_filter_values[col] = st.multiselect(
-                f"Values for {col}",
-                options=distinct_values,
-                default=distinct_values,
+        if raw_df is not None:
+            source_label = (
+                f"Uploaded file: {uploaded.name}"
+                if uploaded is not None
+                else f"Selected file: {selected_path.name}"  # type: ignore[union-attr]
             )
+            st.markdown(f'<div class="info-card">{source_label}</div>', unsafe_allow_html=True)
 
-    filtered_df = apply_row_filters(raw_df, selected_filter_cols, selected_filter_values)
-    st.caption(f"Rows after filters: {len(filtered_df):,} / {len(raw_df):,}")
-    if filtered_df.empty:
-        st.warning("No rows left after applying filters. Adjust filter selections.")
-        return
+            try:
+                window_days = resolve_window_days(window_days_slider, window_days_text)
+                confidence_pct = resolve_confidence_pct(confidence_pct_slider, confidence_pct_text)
+                bollinger_k = resolve_bollinger_k(bollinger_k_slider, bollinger_k_text)
+            except ValueError as exc:
+                st.error(str(exc))
+                raw_df = None
 
-    with st.sidebar:
-        st.subheader("Column Mapping")
-        all_cols = list(raw_df.columns)
-        date_col_default = infer_date_column(all_cols)
-        date_col = st.selectbox(
-            "Date column",
-            options=all_cols,
-            index=all_cols.index(date_col_default),
-        )
+        if raw_df is not None:
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Rows", f"{len(raw_df):,}")
+            col_b.metric("Columns", f"{len(raw_df.columns):,}")
+            col_c.metric("Window Days", f"{window_days}")
 
-        data_shape = st.radio(
-            "CSV layout",
-            options=["Auto-detect", "Wide", "Long"],
-            index=0,
-            horizontal=True,
-            help="Auto-detect infers layout from columns. Use Wide or Long to override.",
-        )
+            with st.expander("Preview selected CSV", expanded=True):
+                st.dataframe(raw_df.head(200), use_container_width=True)
 
-        detected_layout = infer_layout(filtered_df, date_col)
-        effective_layout = detected_layout if data_shape == "Auto-detect" else data_shape
-        if data_shape == "Auto-detect":
-            st.caption(f"Detected layout: {detected_layout}")
-
-        long_denom_default, long_value_default = choose_long_defaults(filtered_df, date_col)
-        long_denom_col = long_denom_default
-        long_value_col = long_value_default
-        if effective_layout == "Long":
-            long_denom_col = st.selectbox(
-                "Long format series label column",
-                options=all_cols,
-                index=all_cols.index(long_denom_default),
-            )
-            long_value_col = st.selectbox(
-                "Long format value column",
-                options=all_cols,
-                index=all_cols.index(long_value_default),
-            )
-            if len({date_col, long_denom_col, long_value_col}) < 3:
-                st.warning(
-                    "Long format needs three different columns: date, series label, and value."
+            with st.sidebar:
+                st.subheader("Data Filters")
+                filterable_cols = list(raw_df.columns)
+                selected_filter_cols = st.multiselect(
+                    "Columns to filter",
+                    options=filterable_cols,
+                    default=[],
+                    help="Choose one or more columns to filter the dataset before time-series prep.",
                 )
+                selected_filter_values: dict[str, list[object]] = {}
+                for col in selected_filter_cols:
+                    distinct_values = get_filter_options(raw_df, col)
+                    selected_filter_values[col] = st.multiselect(
+                        f"Values for {col}",
+                        options=distinct_values,
+                        default=distinct_values,
+                    )
 
-        candidate_numeric = infer_numeric_columns(filtered_df, excluded={date_col})
-        denom_defaults = [
-            c for c in candidate_numeric if c.endswith("_dollar_bills_withdrawn")
-        ]
-        preferred_defaults = denom_defaults if denom_defaults else [
-            c
-            for c in [
-                "twenty_dollar_bills_withdrawn",
-                "fifty_dollar_bills_withdrawn",
-                "hundred_dollar_bills_withdrawn",
-            ]
-            if c in candidate_numeric
-        ]
-        default_series = preferred_defaults if preferred_defaults else candidate_numeric
-        selected_series_cols = default_series
-        if effective_layout == "Wide":
-            selected_series_cols = st.multiselect(
-                "Wide format series columns",
-                options=candidate_numeric,
-                default=default_series,
-                help="For wide-format CSVs, choose one or more numeric columns to analyze.",
-            )
+            filtered_df = apply_row_filters(raw_df, selected_filter_cols, selected_filter_values)
+            st.caption(f"Rows after filters: {len(filtered_df):,} / {len(raw_df):,}")
+            if filtered_df.empty:
+                st.warning("No rows left after applying filters. Adjust filter selections.")
+            else:
+                with st.sidebar:
+                    st.subheader("Column Mapping")
+                    all_cols = list(raw_df.columns)
+                    date_col_default = infer_date_column(all_cols)
+                    date_col = st.selectbox(
+                        "Date column",
+                        options=all_cols,
+                        index=all_cols.index(date_col_default),
+                    )
 
-    try:
-        daily_df, available_series = prepare_daily_wide(
-            filtered_df,
-            date_col=date_col,
-            data_shape=effective_layout,
-            selected_series_cols=selected_series_cols,
-            long_denom_col=long_denom_col,
-            long_value_col=long_value_col,
-        )
-    except Exception as exc:
-        st.error(f"Could not prepare daily series from this CSV: {exc}")
-        return
+                    data_shape = st.radio(
+                        "CSV layout",
+                        options=["Auto-detect", "Wide", "Long"],
+                        index=0,
+                        horizontal=True,
+                        help="Auto-detect infers layout from columns. Use Wide or Long to override.",
+                    )
 
-    daily_df = daily_df.sort_values("date")
+                    detected_layout = infer_layout(filtered_df, date_col)
+                    effective_layout = detected_layout if data_shape == "Auto-detect" else data_shape
+                    if data_shape == "Auto-detect":
+                        st.caption(f"Detected layout: {detected_layout}")
 
-    st.subheader("Prepared Daily Series")
-    st.dataframe(daily_df.head(200), use_container_width=True)
+                    long_denom_default, long_value_default = choose_long_defaults(filtered_df, date_col)
+                    long_denom_col = long_denom_default
+                    long_value_col = long_value_default
+                    if effective_layout == "Long":
+                        long_denom_col = st.selectbox(
+                            "Long format series label column",
+                            options=all_cols,
+                            index=all_cols.index(long_denom_default),
+                        )
+                        long_value_col = st.selectbox(
+                            "Long format value column",
+                            options=all_cols,
+                            index=all_cols.index(long_value_default),
+                        )
+                        if len({date_col, long_denom_col, long_value_col}) < 3:
+                            st.warning(
+                                "Long format needs three different columns: date, series label, and value."
+                            )
 
-    with st.sidebar:
-        selected_series = st.multiselect(
-            "Series to plot",
-            options=available_series,
-            default=available_series,
-        )
-        plot_mode = "Separate"
-        show_bands_combined = True
-        if len(selected_series) > 1:
-            plot_mode = st.radio(
-                "Plot mode",
-                options=["Combined", "Separate"],
-                index=0,
-                horizontal=True,
-                help="Combined overlays selected series on one chart with different colors.",
-            )
-            show_bands_combined = st.checkbox(
-                "Show bands on combined plot",
-                value=True,
-            )
+                    candidate_numeric = infer_numeric_columns(filtered_df, excluded={date_col})
+                    denom_defaults = [
+                        c for c in candidate_numeric if c.endswith("_dollar_bills_withdrawn")
+                    ]
+                    preferred_defaults = denom_defaults if denom_defaults else [
+                        c
+                        for c in [
+                            "twenty_dollar_bills_withdrawn",
+                            "fifty_dollar_bills_withdrawn",
+                            "hundred_dollar_bills_withdrawn",
+                        ]
+                        if c in candidate_numeric
+                    ]
+                    default_series = preferred_defaults if preferred_defaults else candidate_numeric
+                    selected_series_cols = default_series
+                    if effective_layout == "Wide":
+                        selected_series_cols = st.multiselect(
+                            "Wide format series columns",
+                            options=candidate_numeric,
+                            default=default_series,
+                            help="For wide-format CSVs, choose one or more numeric columns to analyze.",
+                        )
 
-    if not selected_series:
-        st.warning("Select at least one series to draw charts.")
-        return
+                try:
+                    daily_df, available_series = prepare_daily_wide(
+                        filtered_df,
+                        date_col=date_col,
+                        data_shape=effective_layout,
+                        selected_series_cols=selected_series_cols,
+                        long_denom_col=long_denom_col,
+                        long_value_col=long_value_col,
+                    )
+                except Exception as exc:
+                    st.error(f"Could not prepare daily series from this CSV: {exc}")
+                    available_series = []
+                    daily_df = pd.DataFrame()
 
-    rolling_by_series: dict[str, pd.DataFrame] = {}
-    for series_name in selected_series:
-        rolling_df = compute_rolling(daily_df, series_name, window_days)
-        if rolling_df.empty:
-            st.warning(
-                f"Not enough observations for '{series_name}' with a {window_days}-day window."
-            )
-            continue
-        rolling_by_series[series_name] = rolling_df
+                if not daily_df.empty:
+                    daily_df = daily_df.sort_values("date")
 
-    if not rolling_by_series:
-        st.warning("No rolling series available after filtering and window settings.")
-        return
+                    st.subheader("Prepared Daily Series")
+                    st.dataframe(daily_df.head(200), use_container_width=True)
 
-    st.subheader("Rolling Statistics Charts")
+                    with st.sidebar:
+                        selected_series = st.multiselect(
+                            "Series to plot",
+                            options=available_series,
+                            default=available_series,
+                        )
+                        plot_mode = "Separate"
+                        show_bands_combined = True
+                        if len(selected_series) > 1:
+                            plot_mode = st.radio(
+                                "Plot mode",
+                                options=["Combined", "Separate"],
+                                index=0,
+                                horizontal=True,
+                                help="Combined overlays selected series on one chart with different colors.",
+                            )
+                            show_bands_combined = st.checkbox(
+                                "Show bands on combined plot",
+                                value=True,
+                            )
 
-    if plot_mode == "Combined" and len(rolling_by_series) > 1:
-        combined_fig = build_combined_rolling_figure(
-            rolling_by_series,
-            band_mode,
-            show_bands_combined,
-            window_days,
-            confidence_pct,
-            bollinger_k,
-        )
-        st.plotly_chart(combined_fig, use_container_width=True)
+                    if not selected_series:
+                        st.warning("Select at least one series to draw charts.")
+                    else:
+                        rolling_by_series: dict[str, pd.DataFrame] = {}
+                        for series_name in selected_series:
+                            rolling_df = compute_rolling(daily_df, series_name, window_days)
+                            if rolling_df.empty:
+                                st.warning(
+                                    f"Not enough observations for '{series_name}' with a {window_days}-day window."
+                                )
+                                continue
+                            rolling_by_series[series_name] = rolling_df
 
-    for series_name, rolling_df in rolling_by_series.items():
-        if plot_mode == "Separate" or len(rolling_by_series) == 1:
-            fig = build_rolling_figure(
-                rolling_df,
-                series_name,
-                band_mode,
-                window_days,
-                confidence_pct,
-                bollinger_k,
-            )
-            st.plotly_chart(fig, use_container_width=True)
+                        if not rolling_by_series:
+                            st.warning("No rolling series available after filtering and window settings.")
+                        else:
+                            st.subheader("Rolling Statistics Charts")
 
-        metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
-        metric_col_1.metric("Latest Variance", f"{rolling_df['moving_variance'].iloc[-1]:,.2f}")
-        metric_col_2.metric("Average Variance", f"{rolling_df['moving_variance'].mean():,.2f}")
-        metric_col_3.metric("Max Variance", f"{rolling_df['moving_variance'].max():,.2f}")
+                            if plot_mode == "Combined" and len(rolling_by_series) > 1:
+                                combined_fig = build_combined_rolling_figure(
+                                    rolling_by_series,
+                                    band_mode,
+                                    show_bands_combined,
+                                    window_days,
+                                    confidence_pct,
+                                    bollinger_k,
+                                )
+                                st.plotly_chart(combined_fig, use_container_width=True)
 
-        if show_variance_panel:
-            variance_fig = build_variance_figure(rolling_df, series_name)
-            st.plotly_chart(variance_fig, use_container_width=True)
-            with st.expander(f"{series_name} rolling stats table", expanded=False):
-                st.dataframe(
-                    rolling_df[["date", "moving_average", "moving_variance"]],
-                    use_container_width=True,
-                    height=260,
-                )
+                            for series_name, rolling_df in rolling_by_series.items():
+                                if plot_mode == "Separate" or len(rolling_by_series) == 1:
+                                    fig = build_rolling_figure(
+                                        rolling_df,
+                                        series_name,
+                                        band_mode,
+                                        window_days,
+                                        confidence_pct,
+                                        bollinger_k,
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
 
-        export_cols = ["date", "moving_average", "moving_variance"]
-        csv_bytes = rolling_df[export_cols].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label=f"Download {series_name} rolling stats CSV",
-            data=csv_bytes,
-            file_name=f"rolling_stats_{series_name}_window{window_days}.csv",
-            mime="text/csv",
-        )
+                                metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
+                                metric_col_1.metric("Latest Variance", f"{rolling_df['moving_variance'].iloc[-1]:,.2f}")
+                                metric_col_2.metric("Average Variance", f"{rolling_df['moving_variance'].mean():,.2f}")
+                                metric_col_3.metric("Max Variance", f"{rolling_df['moving_variance'].max():,.2f}")
+
+                                if show_variance_panel:
+                                    variance_fig = build_variance_figure(rolling_df, series_name)
+                                    st.plotly_chart(variance_fig, use_container_width=True)
+                                    with st.expander(f"{series_name} rolling stats table", expanded=False):
+                                        st.dataframe(
+                                            rolling_df[["date", "moving_average", "moving_variance"]],
+                                            use_container_width=True,
+                                            height=260,
+                                        )
+
+                                export_cols = ["date", "moving_average", "moving_variance"]
+                                csv_bytes = rolling_df[export_cols].to_csv(index=False).encode("utf-8")
+                                st.download_button(
+                                    label=f"Download {series_name} rolling stats CSV",
+                                    data=csv_bytes,
+                                    file_name=f"rolling_stats_{series_name}_window{window_days}.csv",
+                                    mime="text/csv",
+                                )
+
+    with tab_map:
+        render_map_tab(project_root)
 
 
 if __name__ == "__main__":
