@@ -223,6 +223,26 @@ def build_map_denomination_figure(
     return fig
 
 
+def build_map_rolling_variance_figure(rolling_daily: pd.DataFrame, window_days: int) -> go.Figure:
+    fig = px.line(
+        rolling_daily,
+        x="date",
+        y="rolling_variance",
+        color="atm_id",
+        title=f"Rolling Variance of Daily Total Withdrawals ({window_days}-day window)",
+        labels={"rolling_variance": "Rolling Variance", "date": "Date", "atm_id": "ATM"},
+        template="plotly_white",
+    )
+    fig.update_layout(
+        height=300,
+        margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        legend={"orientation": "h", "yanchor": "top", "y": -0.2, "x": 0},
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(15,23,42,0.08)")
+    return fig
+
+
 def infer_date_column(columns: list[str]) -> str:
     preferred = ["date", "day", "timestamp", "datetime", "ds"]
     lowered = {c.lower(): c for c in columns}
@@ -747,6 +767,35 @@ def render_map_tab(project_root: Path) -> None:
             key="map_size_metric",
         )
         max_bubble = st.slider("Max bubble size", min_value=15, max_value=70, value=38, key="map_bubble")
+        map_window_days = st.slider(
+            "Map rolling variance window (days)",
+            min_value=2,
+            max_value=60,
+            value=14,
+            key="map_window_days",
+        )
+        pin_map_on_scroll = st.checkbox(
+            "Keep map visible while scrolling",
+            value=True,
+            key="map_pin_on_scroll",
+            help="Experimental: pins the map panel as you scroll the right-side charts.",
+        )
+
+    if pin_map_on_scroll:
+        st.markdown(
+            """
+            <style>
+            .st-key-atm_map_chart {
+                position: sticky;
+                top: 4.8rem;
+                z-index: 10;
+                background: #FFFFFF;
+                padding-bottom: 0.4rem;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     summary = build_atm_summary(map_df, map_selected_bills)
 
@@ -757,14 +806,17 @@ def render_map_tab(project_root: Path) -> None:
     busiest = summary.loc[summary["total_withdrawals"].idxmax()]
     c4.metric("Busiest ATM", f"{busiest['atm_id']} ({busiest['area']})")
 
-    map_fig = build_map_figure(summary, size_metric, map_style, max_bubble)
-    event = st.plotly_chart(
-        map_fig,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode=["points"],
-        key="atm_map_chart",
-    )
+    col_left, col_right = st.columns([1.25, 1.0], gap="large")
+
+    with col_left:
+        map_fig = build_map_figure(summary, size_metric, map_style, max_bubble)
+        event = st.plotly_chart(
+            map_fig,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode=["points"],
+            key="atm_map_chart",
+        )
 
     selected_ids: list[str] = []
     if event and hasattr(event, "selection") and event.selection.points:
@@ -776,37 +828,70 @@ def render_map_tab(project_root: Path) -> None:
                 idx = pt.get("point_index")
                 if idx is not None and 0 <= idx < len(summary):
                     selected_ids.append(summary.iloc[idx]["atm_id"])
+    selected_ids = list(dict.fromkeys(selected_ids))
 
-    st.divider()
-    if selected_ids:
-        st.subheader(f"Selected ATM{'s' if len(selected_ids) > 1 else ''}: {', '.join(selected_ids)}")
-        sel_summary = summary[summary["atm_id"].isin(selected_ids)].copy()
-        sel_data = map_df[map_df["atm_id"].isin(selected_ids)].copy()
+    with col_left:
+        with st.expander("Map Selection Snapshot", expanded=True):
+            if selected_ids:
+                snapshot = (
+                    summary[summary["atm_id"].isin(selected_ids)]
+                    .sort_values("total_withdrawals", ascending=False)
+                    .rename(
+                        columns={
+                            "atm_id": "ATM ID",
+                            "area": "Area",
+                            "total_withdrawals": "Total",
+                            **MAP_BILL_LABELS,
+                        }
+                    )
+                )
+                view_cols = ["ATM ID", "Area", "Total"] + [MAP_BILL_LABELS[c] for c in map_selected_bills]
+                st.dataframe(snapshot[view_cols], use_container_width=True, hide_index=True, height=220)
+            else:
+                top_atms = (
+                    summary.sort_values("total_withdrawals", ascending=False)
+                    .head(8)
+                    .rename(columns={"atm_id": "ATM ID", "area": "Area", "total_withdrawals": "Total"})
+                )
+                st.dataframe(top_atms[["ATM ID", "Area", "Total"]], use_container_width=True, hide_index=True)
 
-        display_cols = ["atm_id", "area", "latitude", "longitude", "total_withdrawals"] + map_selected_bills
-        st.dataframe(
-            sel_summary[display_cols].rename(
-                columns={**{"atm_id": "ATM ID", "total_withdrawals": "Total Withdrawals"}, **MAP_BILL_LABELS}
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+    with col_right:
+        st.subheader("ATM Time Series")
+        if selected_ids:
+            st.caption(f"Selected ATM{'s' if len(selected_ids) > 1 else ''}: {', '.join(selected_ids)}")
+            sel_data = map_df[map_df["atm_id"].isin(selected_ids)].copy()
 
-        daily = (
-            sel_data.groupby(["date", "atm_id"])[map_selected_bills]
-            .sum()
-            .reset_index()
-        )
-        daily["total"] = daily[map_selected_bills].sum(axis=1)
-
-        st.plotly_chart(build_map_timeseries_figure(daily), use_container_width=True)
-        if len(map_selected_bills) > 1:
-            st.plotly_chart(
-                build_map_denomination_figure(daily, map_selected_bills, selected_ids),
-                use_container_width=True,
+            daily = (
+                sel_data.groupby(["date", "atm_id"])[map_selected_bills]
+                .sum()
+                .reset_index()
             )
-    else:
-        st.info("Click one or more ATM bubbles on the map to see detailed time-series charts below.")
+            daily["total"] = daily[map_selected_bills].sum(axis=1)
+
+            st.plotly_chart(build_map_timeseries_figure(daily), use_container_width=True)
+            if len(map_selected_bills) > 1:
+                st.plotly_chart(
+                    build_map_denomination_figure(daily, map_selected_bills, selected_ids),
+                    use_container_width=True,
+                )
+
+            rolling_daily = daily[["date", "atm_id", "total"]].sort_values(["atm_id", "date"]).copy()
+            rolling_daily["rolling_variance"] = rolling_daily.groupby("atm_id")["total"].transform(
+                lambda s: s.rolling(window=map_window_days, min_periods=map_window_days).var(ddof=0)
+            )
+            rolling_daily = rolling_daily.dropna(subset=["rolling_variance"])
+
+            if not rolling_daily.empty:
+                st.plotly_chart(
+                    build_map_rolling_variance_figure(rolling_daily, map_window_days),
+                    use_container_width=True,
+                )
+            else:
+                st.info(
+                    f"Not enough daily data points for a {map_window_days}-day rolling variance window."
+                )
+        else:
+            st.info("Click one or more ATM bubbles on the map to view time-series details here.")
 
     with st.expander("All ATMs — aggregated summary", expanded=False):
         disp = summary.sort_values("total_withdrawals", ascending=False).copy()
@@ -858,65 +943,64 @@ def main() -> None:
                 selected_path = csv_options[selected_name]
             else:
                 st.warning("No CSV files found in the project root.")
+            uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
-        uploaded = st.file_uploader("Or upload CSV", type=["csv"])
-
-        window_days_slider = st.slider(
-            "Rolling window length (days)",
-            min_value=2,
-            max_value=60,
-            key="window_days_slider",
-            on_change=sync_window_from_slider,
-        )
-        window_days_text = st.text_input(
-            "Or enter rolling window length",
-            key="window_days_text",
-            on_change=sync_window_from_text,
-            help="Optional manual override between 2 and 60 days.",
-        )
-        band_mode = st.radio(
-            "Band type",
-            options=["stddev", "variance", "confidence_interval", "bollinger"],
-            index=0,
-            horizontal=True,
-            format_func=lambda x: {
-                "stddev": "Std Dev",
-                "variance": "Variance",
-                "confidence_interval": "Confidence Interval",
-                "bollinger": "Bollinger",
-            }[x],
-        )
-        confidence_pct_slider = st.slider(
-            "Confidence interval (%)",
-            min_value=50.0,
-            max_value=99.9,
-            step=0.1,
-            key="confidence_pct_slider",
-            on_change=sync_confidence_from_slider,
-            help="Used when band type is confidence_interval.",
-        )
-        confidence_pct_text = st.text_input(
-            "Or enter confidence interval (%)",
-            key="confidence_pct_text",
-            on_change=sync_confidence_from_text,
-            help="Optional manual override (e.g., 90, 95, 99).",
-        )
-        bollinger_k_slider = st.slider(
-            "Bollinger k",
-            min_value=0.1,
-            max_value=5.0,
-            step=0.1,
-            key="bollinger_k_slider",
-            on_change=sync_bollinger_from_slider,
-            help="Used when band type is bollinger. Common default is 2.0.",
-        )
-        bollinger_k_text = st.text_input(
-            "Or enter Bollinger k",
-            key="bollinger_k_text",
-            on_change=sync_bollinger_from_text,
-            help="Optional manual override (e.g., 1.5, 2.0, 2.5).",
-        )
-        show_variance_panel = st.checkbox("Show explicit variance panel", value=True)
+            window_days_slider = st.slider(
+                "Rolling window length (days)",
+                min_value=2,
+                max_value=60,
+                key="window_days_slider",
+                on_change=sync_window_from_slider,
+            )
+            window_days_text = st.text_input(
+                "Or enter rolling window length",
+                key="window_days_text",
+                on_change=sync_window_from_text,
+                help="Optional manual override between 2 and 60 days.",
+            )
+            band_mode = st.radio(
+                "Band type",
+                options=["stddev", "variance", "confidence_interval", "bollinger"],
+                index=0,
+                horizontal=True,
+                format_func=lambda x: {
+                    "stddev": "Std Dev",
+                    "variance": "Variance",
+                    "confidence_interval": "Confidence Interval",
+                    "bollinger": "Bollinger",
+                }[x],
+            )
+            confidence_pct_slider = st.slider(
+                "Confidence interval (%)",
+                min_value=50.0,
+                max_value=99.9,
+                step=0.1,
+                key="confidence_pct_slider",
+                on_change=sync_confidence_from_slider,
+                help="Used when band type is confidence_interval.",
+            )
+            confidence_pct_text = st.text_input(
+                "Or enter confidence interval (%)",
+                key="confidence_pct_text",
+                on_change=sync_confidence_from_text,
+                help="Optional manual override (e.g., 90, 95, 99).",
+            )
+            bollinger_k_slider = st.slider(
+                "Bollinger k",
+                min_value=0.1,
+                max_value=5.0,
+                step=0.1,
+                key="bollinger_k_slider",
+                on_change=sync_bollinger_from_slider,
+                help="Used when band type is bollinger. Common default is 2.0.",
+            )
+            bollinger_k_text = st.text_input(
+                "Or enter Bollinger k",
+                key="bollinger_k_text",
+                on_change=sync_bollinger_from_text,
+                help="Optional manual override (e.g., 1.5, 2.0, 2.5).",
+            )
+            show_variance_panel = st.checkbox("Show explicit variance panel", value=True)
 
         if uploaded is not None:
             source_label = f"Uploaded file: {uploaded.name}"
