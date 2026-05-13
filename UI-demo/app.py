@@ -752,6 +752,51 @@ def render_map_tab(project_root: Path) -> None:
             st.warning("Select at least one denomination.")
             return
 
+        # Build slider bounds from ATM totals over the selected date range.
+        map_df = map_df.copy()
+        map_df["daily_total_withdrawals"] = map_df[map_selected_bills].sum(axis=1)
+
+        deposit_cols = [
+            c
+            for c in map_df.columns
+            if ("deposit" in c.lower()) and pd.api.types.is_numeric_dtype(map_df[c])
+        ]
+        has_deposit = bool(deposit_cols)
+        if has_deposit:
+            map_df["daily_total_deposits"] = map_df[deposit_cols].sum(axis=1)
+
+        slider_summary = build_atm_summary(map_df, map_selected_bills)
+        if has_deposit:
+            slider_summary = slider_summary.merge(
+                map_df.groupby("atm_id", as_index=False)["daily_total_deposits"].sum(),
+                on="atm_id",
+                how="left",
+            ).rename(columns={"daily_total_deposits": "total_deposits"})
+
+        withdraw_min = int(slider_summary["total_withdrawals"].min())
+        withdraw_max = int(slider_summary["total_withdrawals"].max())
+        withdraw_range = st.slider(
+            "Total withdrawals (selected date range)",
+            min_value=withdraw_min,
+            max_value=withdraw_max,
+            value=(withdraw_min, withdraw_max),
+            key="map_daily_withdraw_range",
+        )
+
+        deposit_range: tuple[int, int] | None = None
+        if has_deposit:
+            deposit_min = int(slider_summary["total_deposits"].min())
+            deposit_max = int(slider_summary["total_deposits"].max())
+            deposit_range = st.slider(
+                "Total deposits (selected date range)",
+                min_value=deposit_min,
+                max_value=deposit_max,
+                value=(deposit_min, deposit_max),
+                key="map_daily_deposit_range",
+            )
+        else:
+            st.caption("No deposit columns found in this dataset.")
+
         map_style = st.selectbox(
             "Map style",
             options=["carto-positron", "open-street-map", "carto-darkmatter"],
@@ -781,6 +826,37 @@ def render_map_tab(project_root: Path) -> None:
             help="Experimental: pins the map panel as you scroll the right-side charts.",
         )
 
+    # Apply slider filters to aggregated ATM totals.
+    w_low, w_high = withdraw_range
+    summary = build_atm_summary(map_df, map_selected_bills)
+    if has_deposit:
+        summary = summary.merge(
+            map_df.groupby("atm_id", as_index=False)["daily_total_deposits"].sum(),
+            on="atm_id",
+            how="left",
+        ).rename(columns={"daily_total_deposits": "total_deposits"})
+
+    summary = summary[
+        (summary["total_withdrawals"] >= w_low)
+        & (summary["total_withdrawals"] <= w_high)
+    ]
+    if deposit_range is not None and "total_deposits" in summary.columns:
+        d_low, d_high = deposit_range
+        summary = summary[
+            (summary["total_deposits"] >= d_low)
+            & (summary["total_deposits"] <= d_high)
+        ]
+
+    if summary.empty:
+        st.warning("No ATMs match the current slider filters. Widen the ranges to continue.")
+        return
+
+    # Restrict downstream ATM-day details to the ATMs that remain on the map.
+    map_df = map_df[map_df["atm_id"].isin(summary["atm_id"])]
+    if map_df.empty:
+        st.warning("No ATM-day rows remain for the filtered ATM set.")
+        return
+
     if pin_map_on_scroll:
         st.markdown(
             """
@@ -796,8 +872,6 @@ def render_map_tab(project_root: Path) -> None:
             """,
             unsafe_allow_html=True,
         )
-
-    summary = build_atm_summary(map_df, map_selected_bills)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("ATMs on Map", len(summary))
